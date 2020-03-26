@@ -63,7 +63,7 @@ class Layer(object):
         self.vars = {}
         logging = kwargs.get('logging', False)
         self.logging = logging
-        self.sparse_inputs = False
+        self.sparse_inputs = False        
 
     def _call(self, inputs):
         return inputs
@@ -133,7 +133,7 @@ class GraphConvolution(Layer):
     """Graph convolution layer."""
     def __init__(self, input_dim, output_dim, placeholders, dropout=0.,
                  sparse_inputs=False, act=tf.nn.relu, bias=False,
-                 featureless=False, **kwargs):
+                 featureless=False,doMixup=False,layer_name="Def", **kwargs):
         super(GraphConvolution, self).__init__(**kwargs)
 
         if dropout:
@@ -146,6 +146,12 @@ class GraphConvolution(Layer):
         self.sparse_inputs = sparse_inputs
         self.featureless = featureless
         self.bias = bias
+        
+        self.doMixup = doMixup
+        #if self.doMixup:          
+        self.MU_indices= placeholders['MU_indices']
+        self.train_mask= placeholders['labels_mask']
+        self.mu_lam = placeholders['MU_lambda']                
 
         # helper variable for sparse dropout
         self.num_features_nonzero = placeholders['num_features_nonzero']
@@ -161,7 +167,7 @@ class GraphConvolution(Layer):
             self._log_vars()
 
     def _call(self, inputs):
-        x = inputs
+        x = inputs        
 
         # dropout
         if self.sparse_inputs:
@@ -185,4 +191,20 @@ class GraphConvolution(Layer):
         if self.bias:
             output += self.vars['bias']
         self.embedding = output #output
+        
+        if self.doMixup:     
+          # word embeddings              
+          other_embs= output[10183:,:]
+          
+          doc_embs= output[:10183,:]
+
+          #mixed_x = lam * x + (1 - lam) * x[index, :]
+          T1=  tf.math.scalar_mul(self.mu_lam,doc_embs )
+          T2=  tf.math.scalar_mul( tf.math.subtract(1.0,self.mu_lam), tf.gather(output,self.MU_indices) )          
+          mixup_embs= tf.add_n([T1,T2])
+
+          #mixup embeddings
+          output = tf.concat([mixup_embs,other_embs],0)
+        
+        #output= self.embedding
         return self.act(output)

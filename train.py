@@ -48,7 +48,7 @@ flags.DEFINE_integer('max_degree', 3, 'Maximum Chebyshev polynomial degree.')
 # Load data
 adj, features, y_train, y_val, y_test, train_mask, val_mask, test_mask, train_size, test_size = load_corpus(
     FLAGS.dataset)
-print(adj)
+#print(adj)
 # print(adj[0], adj[1])
 features = sp.identity(features.shape[0])  # featureless
 
@@ -78,6 +78,8 @@ placeholders = {
     'features': tf.sparse_placeholder(tf.float32, shape=tf.constant(features[2], dtype=tf.int64)),
     'labels': tf.placeholder(tf.float32, shape=(None, y_train.shape[1])),
     'labels_mask': tf.placeholder(tf.int32),
+    'MU_indices':tf.placeholder(tf.int32),
+    'MU_lambda':tf.placeholder(tf.float32,shape=()),
     'dropout': tf.placeholder_with_default(0., shape=()),
     # helper variable for sparse dropout
     'num_features_nonzero': tf.placeholder(tf.int32)
@@ -93,10 +95,13 @@ sess = tf.Session(config=session_conf)
 
 
 # Define model evaluation function
-def evaluate(features, support, labels, mask, placeholders):
+def evaluate(features, support, labels, mask,mu_idx,lam, placeholders):
     t_test = time.time()
-    feed_dict_val = construct_feed_dict(
-        features, support, labels, mask, placeholders)
+    feed_dict_val = construct_feed_dict(features, support, labels, mask, placeholders)
+    
+    feed_dict_val.update({placeholders['MU_indices']:mu_idx  })
+    feed_dict_val.update({placeholders['MU_lambda']:lam})
+
     outs_val = sess.run([model.loss, model.accuracy, model.pred, model.labels], feed_dict=feed_dict_val)
     return outs_val[0], outs_val[1], outs_val[2], outs_val[3], (time.time() - t_test)
 
@@ -106,22 +111,45 @@ sess.run(tf.global_variables_initializer())
 
 cost_val = []
 
+def mixup_data(x, alpha=1.0, use_cuda=True):
+    '''Returns mixed inputs, pairs of targets, and lambda'''
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.shape[0]        
+    index = np.random.permutation(batch_size)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+
+    return mixed_x, index, lam
+
 # Train model
 for epoch in range(FLAGS.epochs):
 
     t = time.time()
-    # Construct feed dictionary
+    # Construct feed dictionary    
+
+    y_train[train_mask,:], mu_idx, lam = mixup_data(y_train[train_mask,:])
+
     feed_dict = construct_feed_dict(
         features, support, y_train, train_mask, placeholders)
     feed_dict.update({placeholders['dropout']: FLAGS.dropout})
 
+    feed_dict.update({placeholders['MU_indices']: mu_idx})
+    feed_dict.update({placeholders['MU_lambda']:lam})
+
     # Training step
     outs = sess.run([model.opt_op, model.loss, model.accuracy,
-                     model.layers[0].embedding], feed_dict=feed_dict)
+                     model.layers[0].embedding ], feed_dict=feed_dict)
 
+    #print(outs[3][train_mask,:].shape,y_train[train_mask,:].shape )
+    #print(outs[4].shape)
+          
     # Validation
     cost, acc, pred, labels, duration = evaluate(
-        features, support, y_val, val_mask, placeholders)
+        features, support, y_val, val_mask,mu_idx,lam, placeholders)
     cost_val.append(cost)
 
     print("Epoch:", '%04d' % (epoch + 1), "train_loss=", "{:.5f}".format(outs[1]),
@@ -137,7 +165,7 @@ print("Optimization Finished!")
 
 # Testing
 test_cost, test_acc, pred, labels, test_duration = evaluate(
-    features, support, y_test, test_mask, placeholders)
+    features, support, y_test, test_mask,mu_idx,lam, placeholders)
 print("Test set results:", "cost=", "{:.5f}".format(test_cost),
       "accuracy=", "{:.5f}".format(test_acc), "time=", "{:.5f}".format(test_duration))
 
